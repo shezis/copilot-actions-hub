@@ -1,0 +1,11 @@
+{
+  "name": "filesystem",
+  "description": "Enables read/write access to workspace filesystem",
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+      "env": {}
+    }
+  }
+}

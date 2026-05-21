@@ -1,0 +1,142 @@
+# report-writing.yml
+# Dedicated workflow for report generation with full agent + format control.
+
+name: "📝 Report Writing"
+
+on:
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: "Report topic or title"
+        required: true
+        type: string
+      agent:
+        description: "Custom agent persona"
+        required: true
+        default: "Default Copilot"
+        type: choice
+        options:
+          - Default Copilot
+          - AI Engineer
+          - Backend Developer
+          - Code Reviewer
+          - Frontend Developer
+          - Product Manager
+          - Security Engineer
+          - Software Architect
+      report_type:
+        description: "Type of report"
+        required: true
+        default: "Technical"
+        type: choice
+        options:
+          - Technical
+          - Business
+          - Research
+          - Executive Summary
+          - Competitive Analysis
+          - Risk Assessment
+      format:
+        description: "Output format"
+        required: false
+        default: "markdown"
+        type: choice
+        options:
+          - markdown
+          - html
+          - pdf
+      depth:
+        description: "Report depth"
+        required: false
+        default: "Standard (5-10 pages)"
+        type: choice
+        options:
+          - Brief (1-2 pages)
+          - Standard (5-10 pages)
+          - Detailed (10-20 pages)
+      additional_context:
+        description: "Additional requirements or context (optional)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  generate-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Report Writing task
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const topic = `${{ inputs.topic }}`;
+            const agent = `${{ inputs.agent }}`;
+            const agentSlug = agent.toLowerCase().replace(/\s+/g, '-');
+            const reportType = `${{ inputs.report_type }}`;
+            const format = `${{ inputs.format }}`;
+            const depth = `${{ inputs.depth }}`;
+            const context = `${{ inputs.additional_context }}`;
+
+            const ext = format === 'markdown' ? 'md' : format;
+            const filename = `reports/${topic.replace(/[^a-z0-9]/gi, '-').toLowerCase()}.${ext}`;
+
+            const agentBlock = agentSlug !== 'default-copilot'
+              ? `\n> **Agent:** Act as the **${agent}** agent. Load persona from \`.github/copilot/agents/${agentSlug}.md\`.`
+              : '';
+
+            const body = [
+              `## 📝 Report Writing Request`,
+              ``,
+              `| Field | Value |`,
+              `|-------|-------|`,
+              `| **Topic** | ${topic} |`,
+              `| **Report Type** | ${reportType} |`,
+              `| **Agent** | ${agent} |`,
+              `| **Format** | ${format} |`,
+              `| **Depth** | ${depth} |`,
+              ``,
+              agentBlock,
+              ``,
+              `---`,
+              ``,
+              `### 📋 Task Instructions`,
+              ``,
+              `Read the skill definition at \`.github/copilot/skills/report-writing.md\`, then write a **${reportType}** report on the following topic:`,
+              ``,
+              `**"${topic}"**`,
+              ``,
+              context ? `**Additional context:** ${context}` : '',
+              ``,
+              `### Requirements`,
+              `- Depth: ${depth}`,
+              `- Format: ${format.toUpperCase()}`,
+              `- Save output to: \`${filename}\``,
+              `- Follow the structure defined in the report-writing skill`,
+              `- Open a PR with the generated report`,
+            ].filter(l => l !== undefined).join('\n');
+
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[Report] ${topic}`,
+              body,
+              labels: ['copilot', 'skill:report-writing', `agent:${agentSlug}`, `type:${reportType.toLowerCase().replace(/\s+/g, '-')}`],
+              assignees: ['copilot'],
+            });
+
+            console.log(`✅ Report task created: #${issue.data.number}`);
+            console.log(`🔗 ${issue.data.html_url}`);
+
+            core.summary.addHeading('Report Writing Task Dispatched', 2);
+            core.summary.addTable([
+              [{data: 'Field', header: true}, {data: 'Value', header: true}],
+              ['Topic', topic],
+              ['Agent', agent],
+              ['Type', reportType],
+              ['Issue', `#${issue.data.number}`],
+              ['URL', issue.data.html_url],
+            ]);
+            await core.summary.write();

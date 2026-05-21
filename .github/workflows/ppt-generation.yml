@@ -1,0 +1,155 @@
+# ppt-generation.yml
+# Dedicated workflow for PowerPoint / presentation generation.
+
+name: "📊 PPT Generation"
+
+on:
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: "Presentation topic or title"
+        required: true
+        type: string
+      agent:
+        description: "Custom agent persona"
+        required: true
+        default: "Default Copilot"
+        type: choice
+        options:
+          - Default Copilot
+          - AI Engineer
+          - Backend Developer
+          - Code Reviewer
+          - Frontend Developer
+          - Product Manager
+          - Security Engineer
+          - Software Architect
+      presentation_type:
+        description: "Type of presentation"
+        required: true
+        default: "Technical"
+        type: choice
+        options:
+          - Technical Deep Dive
+          - Executive Summary
+          - Pitch Deck
+          - Educational / Tutorial
+          - Status Update
+          - Competitive Analysis
+      slides_count:
+        description: "Approximate number of slides"
+        required: false
+        default: "10"
+        type: choice
+        options:
+          - "5"
+          - "10"
+          - "15"
+          - "20"
+          - "25"
+      audience:
+        description: "Target audience"
+        required: false
+        default: "General"
+        type: choice
+        options:
+          - General
+          - Technical
+          - Executive / C-Suite
+          - Investors
+          - Customers
+      include_speaker_notes:
+        description: "Include speaker notes"
+        required: false
+        default: "true"
+        type: boolean
+      additional_context:
+        description: "Additional requirements or context (optional)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  generate-ppt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create PPT Generation task
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const topic = `${{ inputs.topic }}`;
+            const agent = `${{ inputs.agent }}`;
+            const agentSlug = agent.toLowerCase().replace(/\s+/g, '-');
+            const presType = `${{ inputs.presentation_type }}`;
+            const slidesCount = `${{ inputs.slides_count }}`;
+            const audience = `${{ inputs.audience }}`;
+            const speakerNotes = ${{ inputs.include_speaker_notes }};
+            const additionalContext = `${{ inputs.additional_context }}`;
+
+            const filename = `presentations/${topic.replace(/[^a-z0-9]/gi, '-').toLowerCase()}.pptx`;
+
+            const agentBlock = agentSlug !== 'default-copilot'
+              ? `\n> **Agent:** Act as the **${agent}** agent. Load persona from \`.github/copilot/agents/${agentSlug}.md\`.`
+              : '';
+
+            const body = [
+              `## 📊 PPT Generation Request`,
+              ``,
+              `| Field | Value |`,
+              `|-------|-------|`,
+              `| **Topic** | ${topic} |`,
+              `| **Type** | ${presType} |`,
+              `| **Agent** | ${agent} |`,
+              `| **Slides** | ~${slidesCount} slides |`,
+              `| **Audience** | ${audience} |`,
+              `| **Speaker Notes** | ${speakerNotes ? 'Yes' : 'No'} |`,
+              ``,
+              agentBlock,
+              ``,
+              `---`,
+              ``,
+              `### 📋 Task Instructions`,
+              ``,
+              `Read the skill definition at \`.github/copilot/skills/ppt-generation.md\`, then create a **${presType}** presentation on:`,
+              ``,
+              `**"${topic}"**`,
+              ``,
+              additionalContext ? `**Additional context:** ${additionalContext}` : '',
+              ``,
+              `### Requirements`,
+              `- Approximately **${slidesCount} slides**`,
+              `- Target audience: **${audience}**`,
+              `- Speaker notes: **${speakerNotes ? 'Include detailed speaker notes for each slide' : 'Skip speaker notes'}**`,
+              `- Generate a Python script using \`python-pptx\` to produce the .pptx file`,
+              `- Save output to: \`${filename}\``,
+              `- Also save a Markdown outline to: \`presentations/${topic.replace(/[^a-z0-9]/gi, '-').toLowerCase()}-outline.md\``,
+              `- Open a PR with both the script and the generated file`,
+            ].filter(l => l !== undefined).join('\n');
+
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[PPT] ${topic}`,
+              body,
+              labels: ['copilot', 'skill:ppt-generation', `agent:${agentSlug}`, `audience:${audience.toLowerCase()}`],
+              assignees: ['copilot'],
+            });
+
+            console.log(`✅ PPT task created: #${issue.data.number}`);
+            console.log(`🔗 ${issue.data.html_url}`);
+
+            core.summary.addHeading('PPT Generation Task Dispatched', 2);
+            core.summary.addTable([
+              [{data: 'Field', header: true}, {data: 'Value', header: true}],
+              ['Topic', topic],
+              ['Agent', agent],
+              ['Type', presType],
+              ['Slides', `~${slidesCount}`],
+              ['Issue', `#${issue.data.number}`],
+              ['URL', issue.data.html_url],
+            ]);
+            await core.summary.write();

@@ -1,0 +1,150 @@
+# copilot-unified.yml
+# Unified entry point: choose a skill AND a custom agent, then provide a prompt.
+# The selected agent's persona is injected into the task context.
+
+name: "🤖 Copilot — Unified Action"
+
+on:
+  workflow_dispatch:
+    inputs:
+      skill:
+        description: "Skill to use"
+        required: true
+        type: choice
+        options:
+          - Report Writing
+          - PPT Generation
+      agent:
+        description: "Custom agent persona (defines expertise & style)"
+        required: true
+        default: "Default Copilot"
+        type: choice
+        options:
+          - Default Copilot
+          - AI Engineer
+          - Backend Developer
+          - Code Reviewer
+          - Frontend Developer
+          - Product Manager
+          - Security Engineer
+          - Software Architect
+      prompt:
+        description: "Your request / instructions for the agent"
+        required: true
+        type: string
+      output_format:
+        description: "Output format"
+        required: false
+        default: "markdown"
+        type: choice
+        options:
+          - markdown
+          - html
+          - pdf
+          - pptx
+      mcp_profile:
+        description: "MCP profile to activate (optional)"
+        required: false
+        default: "none"
+        type: choice
+        options:
+          - none
+          - filesystem
+          - web-search
+          - custom
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  dispatch-to-copilot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Load agent definition
+        id: agent-def
+        run: |
+          AGENT="${{ inputs.agent }}"
+          AGENT_SLUG=$(echo "$AGENT" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+          echo "slug=$AGENT_SLUG" >> $GITHUB_OUTPUT
+
+          # Read agent definition if file exists
+          AGENT_FILE=".github/copilot/agents/${AGENT_SLUG}.md"
+          if [ -f "$AGENT_FILE" ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Copilot task issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const skill = `${{ inputs.skill }}`;
+            const agent = `${{ inputs.agent }}`;
+            const agentSlug = agent.toLowerCase().replace(/\s+/g, '-');
+            const prompt = `${{ inputs.prompt }}`;
+            const format = `${{ inputs.output_format }}`;
+            const mcpProfile = `${{ inputs.mcp_profile }}`;
+
+            const skillSlug = skill.toLowerCase().replace(/\s+/g, '-');
+            const agentInstructions = agentSlug !== 'default-copilot'
+              ? `\n\n> **Agent Persona:** You are acting as the **${agent}** agent. Load and apply the persona defined in \`.github/copilot/agents/${agentSlug}.md\` before proceeding.`
+              : '';
+
+            const mcpNote = mcpProfile !== 'none'
+              ? `\n\n> **MCP Profile:** Activate the \`${mcpProfile}\` MCP profile from \`.github/copilot/mcp_profiles/${mcpProfile}.json\`.`
+              : '';
+
+            const body = [
+              `## 🤖 Copilot Unified Action`,
+              ``,
+              `| Field | Value |`,
+              `|-------|-------|`,
+              `| **Skill** | ${skill} |`,
+              `| **Agent** | ${agent} |`,
+              `| **Output Format** | ${format} |`,
+              `| **MCP Profile** | ${mcpProfile} |`,
+              ``,
+              `---`,
+              ``,
+              `### 📋 Task`,
+              ``,
+              prompt,
+              agentInstructions,
+              mcpNote,
+              ``,
+              `---`,
+              ``,
+              `### ✅ Instructions`,
+              ``,
+              `1. Read the skill definition at \`.github/copilot/skills/${skillSlug}.md\``,
+              `2. Apply the agent persona (if specified above)`,
+              `3. Execute the task described above`,
+              `4. Produce output in **${format}** format`,
+              `5. Save output to the appropriate directory (\`reports/\` or \`presentations/\`)`,
+              `6. Open a Pull Request with the generated content`,
+            ].join('\n');
+
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[${skill}] ${prompt.substring(0, 80)}${prompt.length > 80 ? '...' : ''}`,
+              body,
+              labels: ['copilot', `skill:${skillSlug}`, `agent:${agentSlug}`],
+              assignees: ['copilot'],
+            });
+
+            console.log(`✅ Created issue #${issue.data.number}`);
+            console.log(`🔗 ${issue.data.html_url}`);
+
+            core.summary.addHeading('Copilot Task Dispatched', 2);
+            core.summary.addTable([
+              [{data: 'Field', header: true}, {data: 'Value', header: true}],
+              ['Skill', skill],
+              ['Agent', agent],
+              ['Issue', `#${issue.data.number}`],
+              ['URL', issue.data.html_url],
+            ]);
+            await core.summary.write();
