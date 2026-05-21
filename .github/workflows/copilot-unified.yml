@@ -165,7 +165,14 @@ jobs:
               title: `[${selectedSkills.join(' + ')}] ${prompt.substring(0, 60)}${prompt.length > 60 ? '...' : ''}`,
               body,
               labels: ['copilot', ...skillLabels, `agent:${agentSlug}`],
-              assignees: ['copilot'],
+            });
+
+            // Trigger the Copilot coding agent via comment mention
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.data.number,
+              body: `@github-copilot Please work on this task. All instructions are in the issue body above.`,
             });
 
             console.log(`✅ Created issue #${issue.data.number}`);

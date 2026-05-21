@@ -168,7 +168,14 @@ jobs:
               title: `[PPT] ${topic}`,
               body,
               labels: ['copilot', 'skill:ppt-generation', `agent:${agentSlug}`, `audience:${audience.toLowerCase()}`],
-              assignees: ['copilot'],
+            });
+
+            // Trigger the Copilot coding agent via comment mention
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.data.number,
+              body: `@github-copilot Please work on this task. All instructions are in the issue body above.`,
             });
 
             console.log(`✅ PPT task created: #${issue.data.number}`);
