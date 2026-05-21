@@ -1,5 +1,6 @@
 # report-writing.yml
-# Dedicated workflow for report generation with full agent + format control.
+# Calls OpenRouter via .github/scripts/generate_report.py
+# Flow: inputs -> MCP context -> python script -> commit + PR
 
 name: "📝 Report Writing"
 
@@ -10,13 +11,27 @@ name: "📝 Report Writing"
         description: "Report topic or title"
         required: true
         type: string
+      model:
+        description: "AI model via OpenRouter"
+        required: true
+        default: "anthropic/claude-sonnet-4-5"
+        type: choice
+        options:
+          - anthropic/claude-sonnet-4-5
+          - anthropic/claude-haiku-4-5
+          - openai/gpt-4o
+          - openai/gpt-4o-mini
+          - google/gemini-2.0-flash-001
+          - meta-llama/llama-3.3-70b-instruct
+          - mistralai/mistral-large
+          - deepseek/deepseek-chat-v3-0324
       agent:
         description: "Custom agent persona"
         required: true
-        default: "Default Copilot"
+        default: "Default"
         type: choice
         options:
-          - Default Copilot
+          - Default
           - AI Engineer
           - Backend Developer
           - Code Reviewer
@@ -44,139 +59,102 @@ name: "📝 Report Writing"
         options:
           - markdown
           - html
-          - pdf
       depth:
         description: "Report depth"
         required: false
         default: "Standard (5-10 pages)"
         type: choice
         options:
-          - Brief (1-2 pages)
-          - Standard (5-10 pages)
-          - Detailed (10-20 pages)
+          - "Brief (1-2 pages)"
+          - "Standard (5-10 pages)"
+          - "Detailed (10-20 pages)"
       additional_context:
         description: "Additional requirements or context (optional)"
         required: false
         type: string
-      # ── MCP Tools (tick one or more) ───────────────────────────────────
       mcp_filesystem:
-        description: "🔌 MCP: Filesystem (read/write workspace files)"
+        description: "MCP: Filesystem (inject workspace file list into context)"
         required: false
         default: "false"
         type: boolean
       mcp_web_search:
-        description: "🔌 MCP: Web Search (Brave Search API — needs BRAVE_API_KEY secret)"
+        description: "MCP: Web Search (DuckDuckGo instant answers injected into context)"
         required: false
         default: "false"
         type: boolean
       mcp_github:
-        description: "🔌 MCP: GitHub (repo operations via GitHub MCP server)"
+        description: "MCP: GitHub (inject repo metadata into context)"
         required: false
         default: "false"
         type: boolean
 
 permissions:
   contents: write
-  issues: write
   pull-requests: write
 
 jobs:
   generate-report:
     runs-on: ubuntu-latest
     steps:
-      - name: Create Report Writing task
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const topic           = `${{ inputs.topic }}`;
-            const agent           = `${{ inputs.agent }}`;
-            const agentSlug       = agent.toLowerCase().replace(/\s+/g, '-');
-            const reportType      = `${{ inputs.report_type }}`;
-            const format          = `${{ inputs.format }}`;
-            const depth           = `${{ inputs.depth }}`;
-            const additionalCtx   = `${{ inputs.additional_context }}`;
+      - uses: actions/checkout@v4
 
-            // ── Collect selected MCP tools ───────────────────────────────
-            const mcpMap = {
-              'filesystem': ${{ inputs.mcp_filesystem }},
-              'web-search':  ${{ inputs.mcp_web_search }},
-              'github':      ${{ inputs.mcp_github }},
-            };
-            const selectedMCPs = Object.entries(mcpMap)
-              .filter(([, v]) => v)
-              .map(([k]) => k);
+      - name: Gather MCP context
+        id: mcp
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          USE_FILESYSTEM: ${{ inputs.mcp_filesystem }}
+          USE_GITHUB: ${{ inputs.mcp_github }}
+          USE_WEB_SEARCH: ${{ inputs.mcp_web_search }}
+          TOPIC: ${{ inputs.topic }}
+        run: |
+          MCP_CTX=""
+          if [ "$USE_FILESYSTEM" = "true" ]; then
+            FILES=$(find . -type f \( -name "*.md" -o -name "*.json" \) ! -path "./.git/*" | head -20 | tr '\n' ', ')
+            MCP_CTX="${MCP_CTX}### Workspace files: ${FILES}"
+          fi
+          if [ "$USE_GITHUB" = "true" ]; then
+            INFO=$(gh repo view --json name,description,topics,language 2>/dev/null || echo "{}")
+            MCP_CTX="${MCP_CTX} ### Repo: ${INFO}"
+          fi
+          if [ "$USE_WEB_SEARCH" = "true" ]; then
+            ENC=$(python3 -c "import urllib.parse,os; print(urllib.parse.quote(os.environ['TOPIC']))")
+            RES=$(curl -s "https://api.duckduckgo.com/?q=${ENC}&format=json&no_html=1&skip_disambig=1" | python3 -c "import json,sys;d=json.load(sys.stdin);out=(['Summary: '+d['Abstract']] if d.get('Abstract') else []);[out.append('- '+r['Text'][:200]) for r in d.get('RelatedTopics',[])[:5] if isinstance(r,dict) and r.get('Text')];print('\n'.join(out) or 'No results.')" 2>/dev/null || echo "")
+            MCP_CTX="${MCP_CTX} ### Web: ${RES}"
+          fi
+          echo "context=${MCP_CTX}" >> "$GITHUB_OUTPUT"
 
-            const ext      = format === 'markdown' ? 'md' : format;
-            const filename = `reports/${topic.replace(/[^a-z0-9]/gi, '-').toLowerCase()}.${ext}`;
+      - name: Generate report via OpenRouter
+        id: generate
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TOPIC: ${{ inputs.topic }}
+          MODEL: ${{ inputs.model }}
+          AGENT: ${{ inputs.agent }}
+          REPORT_TYPE: ${{ inputs.report_type }}
+          FORMAT: ${{ inputs.format }}
+          DEPTH: ${{ inputs.depth }}
+          ADDITIONAL_CONTEXT: ${{ inputs.additional_context }}
+          MCP_CONTEXT: ${{ steps.mcp.outputs.context }}
+        run: python3 .github/scripts/generate_report.py
 
-            const agentBlock = agentSlug !== 'default-copilot'
-              ? `\n> **Agent:** Act as the **${agent}** agent. Load persona from \`.github/copilot/agents/${agentSlug}.md\`.`
-              : '';
-
-            const mcpBlock = selectedMCPs.length > 0
-              ? `\n> **MCP Tools Active:** ${selectedMCPs.map(m => `\`${m}\``).join(', ')}  \n> Load each from \`.github/copilot/mcp_profiles/<name>.json\`.`
-              : '';
-
-            const body = [
-              `## 📝 Report Writing Request`,
-              ``,
-              `| Field | Value |`,
-              `|-------|-------|`,
-              `| **Topic** | ${topic} |`,
-              `| **Report Type** | ${reportType} |`,
-              `| **Agent** | ${agent} |`,
-              `| **Format** | ${format} |`,
-              `| **Depth** | ${depth} |`,
-              `| **MCP Tools** | ${selectedMCPs.length > 0 ? selectedMCPs.join(', ') : 'none'} |`,
-              ``,
-              agentBlock,
-              mcpBlock,
-              ``,
-              `---`,
-              ``,
-              `### 📋 Task Instructions`,
-              ``,
-              `Read the skill definition at \`.github/copilot/skills/report-writing.md\`, then write a **${reportType}** report on:`,
-              ``,
-              `**"${topic}"**`,
-              ``,
-              additionalCtx ? `**Additional context:** ${additionalCtx}` : '',
-              ``,
-              `### Requirements`,
-              `- Depth: ${depth}`,
-              `- Format: ${format.toUpperCase()}`,
-              `- Save output to: \`${filename}\``,
-              `- Follow the structure defined in the report-writing skill`,
-              `- Open a PR with the generated report`,
-            ].filter(l => l !== undefined).join('\n');
-
-            const issue = await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `[Report] ${topic}`,
-              body,
-              labels: ['copilot', 'skill:report-writing', `agent:${agentSlug}`, `type:${reportType.toLowerCase().replace(/\s+/g, '-')}`],
-            });
-
-            // Trigger the Copilot coding agent via comment mention
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issue.data.number,
-              body: `@github-copilot Please work on this task. All instructions are in the issue body above.`,
-            });
-
-            console.log(`✅ Report task created: #${issue.data.number}`);
-            console.log(`🔗 ${issue.data.html_url}`);
-
-            core.summary.addHeading('Report Writing Task Dispatched', 2);
-            core.summary.addTable([
-              [{data: 'Field', header: true}, {data: 'Value', header: true}],
-              ['Topic', topic],
-              ['Agent', agent],
-              ['Type', reportType],
-              ['MCP Tools', selectedMCPs.length > 0 ? selectedMCPs.join(', ') : 'none'],
-              ['Issue', `#${issue.data.number}`],
-              ['URL', issue.data.html_url],
-            ]);
-            await core.summary.write();
+      - name: Commit and open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TOPIC: ${{ inputs.topic }}
+          SLUG: ${{ steps.generate.outputs.slug }}
+          MODEL_USED: ${{ steps.generate.outputs.model_used }}
+          TOKENS: ${{ steps.generate.outputs.tokens }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          BRANCH="openrouter/report-${SLUG}-$(date +%Y%m%d-%H%M%S)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add reports/
+          git commit -m "feat(report): ${TOPIC} [model=${MODEL_USED}, tokens=${TOKENS}]"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "Report: ${TOPIC}" \
+            --body "Generated by Report Writing workflow. Model: ${MODEL_USED} | Tokens: ${TOKENS} | Triggered by: @${ACTOR} | Run: ${RUN_URL}" \
+            --base main --head "$BRANCH" --label "ai-generated"

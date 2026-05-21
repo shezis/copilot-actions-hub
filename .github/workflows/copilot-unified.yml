@@ -1,32 +1,36 @@
 # copilot-unified.yml
-# Unified entry point: pick one or more skills, one or more MCP tools,
-# choose a custom agent, then provide a prompt.
-# Skills and MCPs are multi-select via individual checkboxes.
+# Multi-skill workflow: combines report + PPT in one run via generate_unified.py
 
-name: "🤖 Copilot — Unified Action"
+name: "🤖 Unified AI Workflow"
 
 "on":
   workflow_dispatch:
     inputs:
-      # ── Skills (tick one or more) ──────────────────────────────────────
-      skill_report_writing:
-        description: "✅ Skill: Report Writing"
-        required: false
-        default: "false"
-        type: boolean
-      skill_ppt_generation:
-        description: "✅ Skill: PPT Generation"
-        required: false
-        default: "false"
-        type: boolean
-      # ── Agent ──────────────────────────────────────────────────────────
-      agent:
-        description: "Custom agent persona (defines expertise & style)"
+      prompt:
+        description: "What do you want to create?"
         required: true
-        default: "Default Copilot"
+        type: string
+      model:
+        description: "AI model via OpenRouter"
+        required: true
+        default: "anthropic/claude-sonnet-4-5"
         type: choice
         options:
-          - Default Copilot
+          - anthropic/claude-sonnet-4-5
+          - anthropic/claude-haiku-4-5
+          - openai/gpt-4o
+          - openai/gpt-4o-mini
+          - google/gemini-2.0-flash-001
+          - meta-llama/llama-3.3-70b-instruct
+          - mistralai/mistral-large
+          - deepseek/deepseek-chat-v3-0324
+      agent:
+        description: "Custom agent persona"
+        required: true
+        default: "Default"
+        type: choice
+        options:
+          - Default
           - AI Engineer
           - Backend Developer
           - Code Reviewer
@@ -34,12 +38,7 @@ name: "🤖 Copilot — Unified Action"
           - Product Manager
           - Security Engineer
           - Software Architect
-      # ── Prompt ─────────────────────────────────────────────────────────
-      prompt:
-        description: "Your request / instructions for the agent"
-        required: true
-        type: string
-      output_format:
+      format:
         description: "Output format"
         required: false
         default: "markdown"
@@ -47,144 +46,102 @@ name: "🤖 Copilot — Unified Action"
         options:
           - markdown
           - html
-          - pdf
-          - pptx
-      # ── MCP Tools (tick one or more) ───────────────────────────────────
+      skill_report:
+        description: "Skill: Report Writing"
+        required: false
+        default: "true"
+        type: boolean
+      skill_ppt:
+        description: "Skill: PPT Generation (also install python-pptx)"
+        required: false
+        default: "false"
+        type: boolean
       mcp_filesystem:
-        description: "🔌 MCP: Filesystem (read/write workspace files)"
+        description: "MCP: Filesystem"
         required: false
         default: "false"
         type: boolean
       mcp_web_search:
-        description: "🔌 MCP: Web Search (Brave Search API — needs BRAVE_API_KEY secret)"
+        description: "MCP: Web Search"
         required: false
         default: "false"
         type: boolean
       mcp_github:
-        description: "🔌 MCP: GitHub (repo operations via GitHub MCP server)"
+        description: "MCP: GitHub"
         required: false
         default: "false"
         type: boolean
 
 permissions:
   contents: write
-  issues: write
   pull-requests: write
 
 jobs:
-  dispatch-to-copilot:
+  unified-run:
     runs-on: ubuntu-latest
     steps:
-      - name: Create Copilot task issue
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const agent  = `${{ inputs.agent }}`;
-            const agentSlug = agent.toLowerCase().replace(/\s+/g, '-');
-            const prompt = `${{ inputs.prompt }}`;
-            const format = `${{ inputs.output_format }}`;
+      - uses: actions/checkout@v4
 
-            // ── Collect selected skills ──────────────────────────────────
-            const skillMap = {
-              'Report Writing':  ${{ inputs.skill_report_writing }},
-              'PPT Generation':  ${{ inputs.skill_ppt_generation }},
-            };
-            const selectedSkills = Object.entries(skillMap)
-              .filter(([, v]) => v)
-              .map(([k]) => k);
+      - name: Install python-pptx (if PPT skill enabled)
+        if: ${{ inputs.skill_ppt == true || inputs.skill_ppt == 'true' }}
+        run: pip install python-pptx --quiet
 
-            if (selectedSkills.length === 0) {
-              core.setFailed('❌ Select at least one skill before running.');
-              return;
-            }
+      - name: Gather MCP context
+        id: mcp
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          USE_FILESYSTEM: ${{ inputs.mcp_filesystem }}
+          USE_GITHUB: ${{ inputs.mcp_github }}
+          USE_WEB_SEARCH: ${{ inputs.mcp_web_search }}
+          TOPIC: ${{ inputs.prompt }}
+        run: |
+          MCP_CTX=""
+          if [ "$USE_FILESYSTEM" = "true" ]; then
+            FILES=$(find . -type f \( -name "*.md" -o -name "*.json" \) ! -path "./.git/*" | head -20 | tr '\n' ', ')
+            MCP_CTX="${MCP_CTX}### Workspace files: ${FILES}"
+          fi
+          if [ "$USE_GITHUB" = "true" ]; then
+            INFO=$(gh repo view --json name,description,topics,language 2>/dev/null || echo "{}")
+            MCP_CTX="${MCP_CTX} ### Repo: ${INFO}"
+          fi
+          if [ "$USE_WEB_SEARCH" = "true" ]; then
+            ENC=$(python3 -c "import urllib.parse,os; print(urllib.parse.quote(os.environ['TOPIC']))")
+            RES=$(curl -s "https://api.duckduckgo.com/?q=${ENC}&format=json&no_html=1&skip_disambig=1" | python3 -c "import json,sys;d=json.load(sys.stdin);out=(['Summary: '+d['Abstract']] if d.get('Abstract') else []);[out.append('- '+r['Text'][:200]) for r in d.get('RelatedTopics',[])[:5] if isinstance(r,dict) and r.get('Text')];print('\n'.join(out) or 'No results.')" 2>/dev/null || echo "")
+            MCP_CTX="${MCP_CTX} ### Web: ${RES}"
+          fi
+          echo "context=${MCP_CTX}" >> "$GITHUB_OUTPUT"
 
-            // ── Collect selected MCP tools ───────────────────────────────
-            const mcpMap = {
-              'filesystem': ${{ inputs.mcp_filesystem }},
-              'web-search':  ${{ inputs.mcp_web_search }},
-              'github':      ${{ inputs.mcp_github }},
-            };
-            const selectedMCPs = Object.entries(mcpMap)
-              .filter(([, v]) => v)
-              .map(([k]) => k);
+      - name: Run unified AI generation
+        id: generate
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          USER_PROMPT: ${{ inputs.prompt }}
+          MODEL: ${{ inputs.model }}
+          AGENT: ${{ inputs.agent }}
+          FORMAT: ${{ inputs.format }}
+          SKILL_REPORT: ${{ inputs.skill_report }}
+          SKILL_PPT: ${{ inputs.skill_ppt }}
+          MCP_CONTEXT: ${{ steps.mcp.outputs.context }}
+        run: python3 .github/scripts/generate_unified.py
 
-            // ── Build issue body ─────────────────────────────────────────
-            const skillSlugs    = selectedSkills.map(s => s.toLowerCase().replace(/\s+/g, '-'));
-            const skillRefs     = skillSlugs.map(s => `- \`.github/copilot/skills/${s}.md\``).join('\n');
-            const skillLabels   = skillSlugs.map(s => `skill:${s}`);
-            const skillListMd   = selectedSkills.map(s => `**${s}**`).join(', ');
-
-            const agentBlock = agentSlug !== 'default-copilot'
-              ? `\n> **Agent Persona:** Act as the **${agent}** agent. Load persona from \`.github/copilot/agents/${agentSlug}.md\`.`
-              : '';
-
-            const mcpBlock = selectedMCPs.length > 0
-              ? `\n> **MCP Tools Active:** ${selectedMCPs.map(m => `\`${m}\``).join(', ')}  \n> Load each profile from \`.github/copilot/mcp_profiles/<name>.json\`.`
-              : '';
-
-            const skillInstructions = skillSlugs.map((slug, i) =>
-              `${i + 1}. **${selectedSkills[i]}** — read \`.github/copilot/skills/${slug}.md\`, execute accordingly`
-            ).join('\n');
-
-            const body = [
-              `## 🤖 Copilot Unified Action`,
-              ``,
-              `| Field | Value |`,
-              `|-------|-------|`,
-              `| **Skills** | ${skillListMd} |`,
-              `| **Agent** | ${agent} |`,
-              `| **Output Format** | ${format} |`,
-              `| **MCP Tools** | ${selectedMCPs.length > 0 ? selectedMCPs.join(', ') : 'none'} |`,
-              ``,
-              agentBlock,
-              mcpBlock,
-              ``,
-              `---`,
-              ``,
-              `### 📋 Task`,
-              ``,
-              prompt,
-              ``,
-              `---`,
-              ``,
-              `### ✅ Instructions`,
-              ``,
-              `Execute each selected skill in order:`,
-              ``,
-              skillInstructions,
-              ``,
-              `For all outputs:`,
-              `- Produce output in **${format}** format`,
-              `- Save reports to \`reports/\`, presentations to \`presentations/\``,
-              `- Open a single Pull Request containing all generated content`,
-            ].filter(l => l !== null && l !== undefined).join('\n');
-
-            const issue = await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `[${selectedSkills.join(' + ')}] ${prompt.substring(0, 60)}${prompt.length > 60 ? '...' : ''}`,
-              body,
-              labels: ['copilot', ...skillLabels, `agent:${agentSlug}`],
-            });
-
-            // Trigger the Copilot coding agent via comment mention
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issue.data.number,
-              body: `@github-copilot Please work on this task. All instructions are in the issue body above.`,
-            });
-
-            console.log(`✅ Created issue #${issue.data.number}`);
-            console.log(`🔗 ${issue.data.html_url}`);
-
-            core.summary.addHeading('Copilot Task Dispatched', 2);
-            core.summary.addTable([
-              [{data: 'Field', header: true}, {data: 'Value', header: true}],
-              ['Skills', selectedSkills.join(', ')],
-              ['MCP Tools', selectedMCPs.length > 0 ? selectedMCPs.join(', ') : 'none'],
-              ['Agent', agent],
-              ['Issue', `#${issue.data.number}`],
-              ['URL', issue.data.html_url],
-            ]);
-            await core.summary.write();
+      - name: Commit and open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROMPT: ${{ inputs.prompt }}
+          SLUG: ${{ steps.generate.outputs.slug }}
+          MODEL_USED: ${{ steps.generate.outputs.model_used }}
+          TOKENS: ${{ steps.generate.outputs.tokens }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          BRANCH="openrouter/unified-${SLUG}-$(date +%Y%m%d-%H%M%S)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add reports/ presentations/
+          git commit -m "feat(unified): ${PROMPT} [model=${MODEL_USED}, tokens=${TOKENS}]"
+          git push origin "$BRANCH"
+          gh pr create \
+            --title "Unified: ${PROMPT}" \
+            --body "Generated by Unified AI workflow. Model: ${MODEL_USED} | Tokens: ${TOKENS} | Triggered by: @${ACTOR} | Run: ${RUN_URL}" \
+            --base main --head "$BRANCH" --label "ai-generated"
