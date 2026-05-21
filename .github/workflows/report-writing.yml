@@ -3,7 +3,7 @@
 
 name: "📝 Report Writing"
 
-on:
+"on":
   workflow_dispatch:
     inputs:
       topic:
